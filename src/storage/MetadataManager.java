@@ -36,7 +36,7 @@ public class MetadataManager {
             bw.newLine();
             
             for (Column column : table.getSchema().getColumns()) {
-                bw.write(column.getName() + ":" + column.getType().name());
+                bw.write(column.getName() + ":" + column.getType().name() + ":" + column.isPrimaryKey());
                 bw.newLine();
             }
         } catch (IOException e) {
@@ -66,13 +66,17 @@ public class MetadataManager {
                 if (line.isEmpty()) continue;
                 
                 String[] parts = line.split(":");
-                if (parts.length != 2) {
+                if (parts.length < 2 || parts.length > 3) {
                     throw new StorageException("Invalid column format in metadata for: " + tableName);
                 }
                 
                 String colName = parts[0];
                 DataType type = DataType.valueOf(parts[1]);
-                schema.addColumn(new Column(colName, type));
+                boolean isPrimaryKey = false;
+                if (parts.length == 3) {
+                    isPrimaryKey = Boolean.parseBoolean(parts[2]);
+                }
+                schema.addColumn(new Column(colName, type, isPrimaryKey));
             }
             return schema;
         } catch (IOException e) {

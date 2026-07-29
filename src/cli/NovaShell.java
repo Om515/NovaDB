@@ -56,7 +56,7 @@ public class NovaShell {
                     QueryResult result = db.execute(input);
                     // Standard operations simply log messages. Sets return full output blocks.
                     if (result.getRecords() != null) {
-                        System.out.println("\n" + result.toString());
+                        System.out.println("\n" + result);
                     } else {
                         System.out.println("\n" + result.getMessage());
                     }

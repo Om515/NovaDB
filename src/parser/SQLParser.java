@@ -81,8 +81,15 @@ public class SQLParser {
             } catch (IllegalArgumentException e) {
                 throw new ParserException();
             }
-            schema.addColumn(new Column(colName, type));
             index++;
+            
+            boolean isPrimaryKey = false;
+            if (index + 1 < tokens.size() && tokens.get(index).toUpperCase().equals("PRIMARY") && tokens.get(index + 1).toUpperCase().equals("KEY")) {
+                isPrimaryKey = true;
+                index += 2;
+            }
+
+            schema.addColumn(new Column(colName, type, isPrimaryKey));
 
             if (index < tokens.size() && tokens.get(index).equals(",")) {
                 index++;
@@ -99,22 +106,38 @@ public class SQLParser {
         }
         String tableName = tokens.get(2);
 
-        if (!tokens.get(4).equals("("))
-            throw new ParserException();
-
-        List<Object> values = new ArrayList<>();
-        int index = 5;
-        while (index < tokens.size() && !tokens.get(index).equals(")")) {
-            String valStr = tokens.get(index);
-            values.add(parseLiteral(valStr));
+        List<List<Object>> valuesList = new ArrayList<>();
+        int index = 4;
+        while (index < tokens.size()) {
+            if (!tokens.get(index).equals("("))
+                throw new ParserException();
+            
             index++;
-
-            if (index < tokens.size() && tokens.get(index).equals(",")) {
+            List<Object> values = new ArrayList<>();
+            while (index < tokens.size() && !tokens.get(index).equals(")")) {
+                String valStr = tokens.get(index);
+                values.add(parseLiteral(valStr));
                 index++;
+
+                if (index < tokens.size() && tokens.get(index).equals(",")) {
+                    index++;
+                }
+            }
+            
+            if (index >= tokens.size() || !tokens.get(index).equals(")"))
+                throw new ParserException();
+                
+            valuesList.add(values);
+            index++; // skip ")"
+            
+            if (index < tokens.size() && tokens.get(index).equals(",")) {
+                index++; // skip ","
+            } else {
+                break;
             }
         }
 
-        return new InsertCommand(tableName, values);
+        return new InsertCommand(tableName, valuesList);
     }
 
     private Command parseSelect(List<String> tokens) {
@@ -210,11 +233,15 @@ public class SQLParser {
     }
 
     private Object parseLiteral(String valStr) {
-        if (valStr.startsWith("'") && valStr.endsWith("'")) {
+        if ((valStr.startsWith("'") && valStr.endsWith("'")) || 
+            (valStr.startsWith("\"") && valStr.endsWith("\""))) {
             return valStr.substring(1, valStr.length() - 1);
         }
         if (valStr.equalsIgnoreCase("true") || valStr.equalsIgnoreCase("false")) {
             return Boolean.parseBoolean(valStr);
+        }
+        if (valStr.equalsIgnoreCase("null")) {
+            return null;
         }
         try {
             if (valStr.contains(".")) {
