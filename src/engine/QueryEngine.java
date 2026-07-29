@@ -109,33 +109,74 @@ public class QueryEngine {
         return new QueryResult(true, "Index dropped.");
     }
 
+    private void checkDuplicatePrimaryKey(Schema schema, String tableName, Object pkValue, List<Record> allRecords) {
+        Column pkColumn = schema.getPrimaryKeyColumn();
+        if (pkColumn == null) return;
+        
+        Index targetIndex = null;
+        for (Index idx : indexManager.getIndicesForTable(tableName)) {
+            if (idx.getColumnName().equals(pkColumn.getName())) {
+                targetIndex = idx;
+                break;
+            }
+        }
+        
+        if (targetIndex != null) {
+            Integer pos = indexManager.searchKey(targetIndex, (Comparable) pkValue);
+            if (pos != null) {
+                throw new QueryException("Duplicate PRIMARY KEY value: " + pkValue);
+            }
+        } else {
+            int pkIndex = schema.getPrimaryKeyIndex();
+            for (Record record : allRecords) {
+                if (matchCondition(record, pkIndex, pkValue)) {
+                    throw new QueryException("Duplicate PRIMARY KEY value: " + pkValue);
+                }
+            }
+        }
+    }
+
     private QueryResult executeInsert(InsertCommand cmd) {
         Table table = schemaManager.getTable(cmd.getTableName());
         Schema schema = table.getSchema();
-        List<Object> values = cmd.getValues();
+        List<List<Object>> valuesList = cmd.getValuesList();
 
-        if (values.size() != schema.getColumnCount()) {
-            throw new QueryException("Insert value count (" + values.size() +
-                    ") does not match schema column count (" + schema.getColumnCount() + ").");
+        int insertedRows = 0;
+
+        for (List<Object> values : valuesList) {
+            if (values.size() != schema.getColumnCount()) {
+                throw new QueryException("Insert value count (" + values.size() +
+                        ") does not match schema column count (" + schema.getColumnCount() + ").");
+            }
+
+            int pkIndex = schema.getPrimaryKeyIndex();
+            if (pkIndex != -1) {
+                Object pkValue = values.get(pkIndex);
+                if (pkValue == null) {
+                    throw new QueryException("PRIMARY KEY cannot be NULL.");
+                }
+                checkDuplicatePrimaryKey(schema, cmd.getTableName(), pkValue, storageManager.getRecords(cmd.getTableName()));
+            }
+
+            Record record = new Record();
+            for (Object value : values) {
+                record.addCell(new Cell(value));
+            }
+
+            int recordPosition = storageManager.insertRecord(cmd.getTableName(), record);
+
+            for (Index index : indexManager.getIndicesForTable(cmd.getTableName())) {
+                int colIndex = getColumnIndex(schema, index.getColumnName());
+                Comparable key = (Comparable) record.getCell(colIndex).getValue();
+                System.out.println(
+                        "Inserted key=" + key +
+                                " position=" + recordPosition);
+                indexManager.insertKey(index, key, recordPosition);
+            }
+            insertedRows++;
         }
 
-        Record record = new Record();
-        for (Object value : values) {
-            record.addCell(new Cell(value));
-        }
-
-        int recordPosition = storageManager.insertRecord(cmd.getTableName(), record);
-
-        for (Index index : indexManager.getIndicesForTable(cmd.getTableName())) {
-            int colIndex = getColumnIndex(schema, index.getColumnName());
-            Comparable key = (Comparable) record.getCell(colIndex).getValue();
-            System.out.println(
-                    "Inserted key=" + key +
-                            " position=" + recordPosition);
-            indexManager.insertKey(index, key, recordPosition);
-        }
-
-        return new QueryResult(true, "1 row inserted.");
+        return new QueryResult(true, insertedRows + " row(s) inserted.");
     }
 
     private QueryResult executeSelect(SelectCommand cmd) {
@@ -181,7 +222,12 @@ public class QueryEngine {
             }
         }
 
-        return new QueryResult(true, results.size() + " rows selected.", results);
+        List<String> colNames = new ArrayList<>();
+        for (Column col : schema.getColumns()) {
+            colNames.add(col.getName());
+        }
+
+        return new QueryResult(true, results.size() + " rows selected.", results, colNames);
     }
 
     private QueryResult executeUpdate(UpdateCommand cmd) {
@@ -191,11 +237,29 @@ public class QueryEngine {
         int updateColIndex = getColumnIndex(schema, cmd.getColumnName());
         int whereColIndex = getColumnIndex(schema, cmd.getWhereColumn());
 
+        int pkIndex = schema.getPrimaryKeyIndex();
+        boolean updatingPrimaryKey = (pkIndex == updateColIndex);
+        
+        if (updatingPrimaryKey && cmd.getNewValue() == null) {
+            throw new QueryException("PRIMARY KEY cannot be NULL.");
+        }
+
         List<Record> updatedRecords = new ArrayList<>();
         int updatedCount = 0;
 
-        for (Record record : storageManager.getRecords(cmd.getTableName())) {
+        List<Record> allRecords = storageManager.getRecords(cmd.getTableName());
+        for (Record record : allRecords) {
             if (matchCondition(record, whereColIndex, cmd.getWhereValue())) {
+                if (updatingPrimaryKey) {
+                    Object oldPkValue = record.getCell(pkIndex).getValue();
+                    if (!oldPkValue.equals(cmd.getNewValue())) {
+                        if (updatedCount > 0) {
+                            throw new QueryException("Duplicate PRIMARY KEY value: " + cmd.getNewValue());
+                        }
+                        checkDuplicatePrimaryKey(schema, cmd.getTableName(), cmd.getNewValue(), allRecords);
+                    }
+                }
+
                 for (Index index : indexManager.getIndicesForTable(cmd.getTableName())) {
                     int colIdx = getColumnIndex(schema, index.getColumnName());
                     Comparable oldKey = (Comparable) record.getCell(colIdx).getValue();

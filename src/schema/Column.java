@@ -6,10 +6,16 @@ package schema;
 public class Column {
     private String name;
     private DataType type;
+    private boolean isPrimaryKey;
 
     public Column(String name, DataType type) {
+        this(name, type, false);
+    }
+
+    public Column(String name, DataType type, boolean isPrimaryKey) {
         this.name = name;
         this.type = type;
+        this.isPrimaryKey = isPrimaryKey;
     }
 
     public String getName() {
@@ -28,11 +34,20 @@ public class Column {
         this.type = type;
     }
 
+    public boolean isPrimaryKey() {
+        return isPrimaryKey;
+    }
+
+    public void setPrimaryKey(boolean primaryKey) {
+        isPrimaryKey = primaryKey;
+    }
+
     @Override
     public String toString() {
         return "Column{" +
                 "name='" + name + '\'' +
                 ", type=" + type +
+                ", isPrimaryKey=" + isPrimaryKey +
                 '}';
     }
 }

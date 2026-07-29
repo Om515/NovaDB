@@ -1,5 +1,6 @@
 package schema;
 
+import exception.SchemaException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -14,6 +15,9 @@ public class Schema {
     }
 
     public void addColumn(Column column) {
+        if (column.isPrimaryKey() && getPrimaryKeyColumn() != null) {
+            throw new SchemaException("Multiple PRIMARY KEYs defined in table definition.");
+        }
         this.columns.add(column);
     }
 
@@ -27,7 +31,7 @@ public class Schema {
                 return column;
             }
         }
-        return null; // Return null or throw exception based on further iteration
+        return null;
     }
 
     public boolean containsColumn(String name) {
@@ -36,6 +40,24 @@ public class Schema {
 
     public int getColumnCount() {
         return columns.size();
+    }
+
+    public Column getPrimaryKeyColumn() {
+        for (Column column : columns) {
+            if (column.isPrimaryKey()) {
+                return column;
+            }
+        }
+        return null;
+    }
+
+    public int getPrimaryKeyIndex() {
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).isPrimaryKey()) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     @Override

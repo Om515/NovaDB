@@ -14,20 +14,24 @@ public class Tokenizer {
     public List<String> tokenize(String sql) {
         List<String> tokens = new ArrayList<>();
         StringBuilder currentToken = new StringBuilder();
-        boolean inQuotes = false;
+        boolean inSingleQuotes = false;
+        boolean inDoubleQuotes = false;
         
         for (int i = 0; i < sql.length(); i++) {
             char c = sql.charAt(i);
             
-            if (c == '\'') {
-                inQuotes = !inQuotes;
+            if (c == '\'' && !inDoubleQuotes) {
+                inSingleQuotes = !inSingleQuotes;
                 currentToken.append(c);
-            } else if (!inQuotes && (c == ' ' || c == ',' || c == '(' || c == ')' || c == '=')) {
+            } else if (c == '"' && !inSingleQuotes) {
+                inDoubleQuotes = !inDoubleQuotes;
+                currentToken.append(c);
+            } else if (!inSingleQuotes && !inDoubleQuotes && (Character.isWhitespace(c) || c == ',' || c == '(' || c == ')' || c == '=')) {
                 if (currentToken.length() > 0) {
                     tokens.add(currentToken.toString());
                     currentToken.setLength(0);
                 }
-                if (c != ' ') {
+                if (!Character.isWhitespace(c)) {
                     tokens.add(String.valueOf(c));
                 }
             } else {
