@@ -109,28 +109,115 @@ public class QueryEngine {
         return new QueryResult(true, "Index dropped.");
     }
 
-    private void checkDuplicatePrimaryKey(Schema schema, String tableName, Object pkValue, List<Record> allRecords) {
-        Column pkColumn = schema.getPrimaryKeyColumn();
-        if (pkColumn == null) return;
+    private void checkUniqueConstraint(Schema schema, String tableName, int colIndex, Object value, List<Record> allRecords, boolean isPrimaryKey) {
+        Column column = schema.getColumns().get(colIndex);
         
         Index targetIndex = null;
         for (Index idx : indexManager.getIndicesForTable(tableName)) {
-            if (idx.getColumnName().equals(pkColumn.getName())) {
+            if (idx.getColumnName().equals(column.getName())) {
                 targetIndex = idx;
                 break;
             }
         }
         
+        String errorMsg = isPrimaryKey 
+            ? "Duplicate PRIMARY KEY value: " + value 
+            : "Duplicate UNIQUE value for column '" + column.getName() + "'.";
+            
         if (targetIndex != null) {
-            Integer pos = indexManager.searchKey(targetIndex, (Comparable) pkValue);
+            Integer pos = indexManager.searchKey(targetIndex, (Comparable) value);
             if (pos != null) {
-                throw new QueryException("Duplicate PRIMARY KEY value: " + pkValue);
+                throw new QueryException(errorMsg);
             }
         } else {
-            int pkIndex = schema.getPrimaryKeyIndex();
             for (Record record : allRecords) {
-                if (matchCondition(record, pkIndex, pkValue)) {
-                    throw new QueryException("Duplicate PRIMARY KEY value: " + pkValue);
+                if (matchCondition(record, colIndex, value)) {
+                    throw new QueryException(errorMsg);
+                }
+            }
+        }
+    }
+
+    private void validateForeignKey(Schema schema, int colIndex, Object value) {
+        if (value == null) return;
+        
+        Column column = schema.getColumns().get(colIndex);
+        for (schema.ForeignKeyConstraint fk : schema.getForeignKeys()) {
+            if (fk.getChildColumn().equals(column.getName())) {
+                String parentTableName = fk.getParentTable();
+                String parentColName = fk.getParentColumn();
+                
+                Table parentTable = schemaManager.getTable(parentTableName);
+                if (parentTable == null) {
+                    throw new QueryException("Foreign key constraint violated.");
+                }
+                
+                Schema parentSchema = parentTable.getSchema();
+                int parentColIndex = getColumnIndex(parentSchema, parentColName);
+                
+                Index targetIndex = null;
+                for (Index idx : indexManager.getIndicesForTable(parentTableName)) {
+                    if (idx.getColumnName().equals(parentColName)) {
+                        targetIndex = idx;
+                        break;
+                    }
+                }
+                
+                boolean found = false;
+                if (targetIndex != null) {
+                    Integer pos = indexManager.searchKey(targetIndex, (Comparable) value);
+                    if (pos != null) {
+                        found = true;
+                    }
+                } else {
+                    for (Record parentRecord : storageManager.getRecords(parentTableName)) {
+                        if (matchCondition(parentRecord, parentColIndex, value)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!found) {
+                    throw new QueryException("Foreign key constraint violated.");
+                }
+            }
+        }
+    }
+
+    private void validateDeleteForeignKeys(String tableName, Record deletedRecord) {
+        Table currentTable = schemaManager.getTable(tableName);
+        List<String> allTables = schemaManager.showTables();
+        
+        for (String childTableName : allTables) {
+            Table childTable = schemaManager.getTable(childTableName);
+            for (schema.ForeignKeyConstraint fk : childTable.getSchema().getForeignKeys()) {
+                if (fk.getParentTable().equals(tableName)) {
+                    int parentColIndex = getColumnIndex(currentTable.getSchema(), fk.getParentColumn());
+                    Object deletedValueForThisFk = deletedRecord.getCell(parentColIndex).getValue();
+                    
+                    int childColIndex = getColumnIndex(childTable.getSchema(), fk.getChildColumn());
+                    
+                    Index targetIndex = null;
+                    for (Index idx : indexManager.getIndicesForTable(childTableName)) {
+                        if (idx.getColumnName().equals(fk.getChildColumn())) {
+                            targetIndex = idx;
+                            break;
+                        }
+                    }
+                    
+                    if (targetIndex != null) {
+                        Integer pos = indexManager.searchKey(targetIndex, (Comparable) deletedValueForThisFk);
+                        if (pos != null) {
+                            throw new QueryException("Foreign key constraint violation.");
+                        }
+                    } else {
+                        for (Record childRecord : storageManager.getRecords(childTableName)) {
+                            if (matchCondition(childRecord, childColIndex, deletedValueForThisFk)) {
+                                throw new QueryException("Foreign key constraint violation.");
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -149,13 +236,24 @@ public class QueryEngine {
                         ") does not match schema column count (" + schema.getColumnCount() + ").");
             }
 
-            int pkIndex = schema.getPrimaryKeyIndex();
-            if (pkIndex != -1) {
-                Object pkValue = values.get(pkIndex);
-                if (pkValue == null) {
-                    throw new QueryException("PRIMARY KEY cannot be NULL.");
+            for (int colIndex = 0; colIndex < schema.getColumnCount(); colIndex++) {
+                Column column = schema.getColumns().get(colIndex);
+                Object value = values.get(colIndex);
+                
+                if (column.isPrimaryKey() || column.isNotNull()) {
+                    if (value == null) {
+                        String errorMsg = column.isPrimaryKey() 
+                            ? "PRIMARY KEY cannot be NULL." 
+                            : "NOT NULL constraint violated on column '" + column.getName() + "'.";
+                        throw new QueryException(errorMsg);
+                    }
                 }
-                checkDuplicatePrimaryKey(schema, cmd.getTableName(), pkValue, storageManager.getRecords(cmd.getTableName()));
+                
+                if (value != null && (column.isPrimaryKey() || column.isUnique())) {
+                    checkUniqueConstraint(schema, cmd.getTableName(), colIndex, value, storageManager.getRecords(cmd.getTableName()), column.isPrimaryKey());
+                }
+                
+                validateForeignKey(schema, colIndex, value);
             }
 
             Record record = new Record();
@@ -237,11 +335,15 @@ public class QueryEngine {
         int updateColIndex = getColumnIndex(schema, cmd.getColumnName());
         int whereColIndex = getColumnIndex(schema, cmd.getWhereColumn());
 
-        int pkIndex = schema.getPrimaryKeyIndex();
-        boolean updatingPrimaryKey = (pkIndex == updateColIndex);
+        Column updateColumn = schema.getColumns().get(updateColIndex);
         
-        if (updatingPrimaryKey && cmd.getNewValue() == null) {
-            throw new QueryException("PRIMARY KEY cannot be NULL.");
+        if (updateColumn.isPrimaryKey() || updateColumn.isNotNull()) {
+            if (cmd.getNewValue() == null) {
+                String errorMsg = updateColumn.isPrimaryKey() 
+                    ? "PRIMARY KEY cannot be NULL." 
+                    : "NOT NULL constraint violated on column '" + updateColumn.getName() + "'.";
+                throw new QueryException(errorMsg);
+            }
         }
 
         List<Record> updatedRecords = new ArrayList<>();
@@ -250,15 +352,20 @@ public class QueryEngine {
         List<Record> allRecords = storageManager.getRecords(cmd.getTableName());
         for (Record record : allRecords) {
             if (matchCondition(record, whereColIndex, cmd.getWhereValue())) {
-                if (updatingPrimaryKey) {
-                    Object oldPkValue = record.getCell(pkIndex).getValue();
-                    if (!oldPkValue.equals(cmd.getNewValue())) {
+                if (updateColumn.isPrimaryKey() || updateColumn.isUnique()) {
+                    Object oldValue = record.getCell(updateColIndex).getValue();
+                    if (!cmd.getNewValue().equals(oldValue)) {
                         if (updatedCount > 0) {
-                            throw new QueryException("Duplicate PRIMARY KEY value: " + cmd.getNewValue());
+                             String errorMsg = updateColumn.isPrimaryKey() 
+                                 ? "Duplicate PRIMARY KEY value: " + cmd.getNewValue() 
+                                 : "Duplicate UNIQUE value for column '" + updateColumn.getName() + "'.";
+                             throw new QueryException(errorMsg);
                         }
-                        checkDuplicatePrimaryKey(schema, cmd.getTableName(), cmd.getNewValue(), allRecords);
+                        checkUniqueConstraint(schema, cmd.getTableName(), updateColIndex, cmd.getNewValue(), allRecords, updateColumn.isPrimaryKey());
                     }
                 }
+                
+                validateForeignKey(schema, updateColIndex, cmd.getNewValue());
 
                 for (Index index : indexManager.getIndicesForTable(cmd.getTableName())) {
                     int colIdx = getColumnIndex(schema, index.getColumnName());
@@ -291,6 +398,8 @@ public class QueryEngine {
 
         for (Record record : storageManager.getRecords(cmd.getTableName())) {
             if (matchCondition(record, whereColIndex, cmd.getWhereValue())) {
+                validateDeleteForeignKeys(cmd.getTableName(), record);
+                
                 recordsToDelete.add(record);
                 counter++;
 

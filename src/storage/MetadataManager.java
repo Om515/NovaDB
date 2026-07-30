@@ -36,7 +36,12 @@ public class MetadataManager {
             bw.newLine();
             
             for (Column column : table.getSchema().getColumns()) {
-                bw.write(column.getName() + ":" + column.getType().name() + ":" + column.isPrimaryKey());
+                bw.write(column.getName() + ":" + column.getType().name() + ":" + column.isPrimaryKey() + ":" + column.isUnique() + ":" + column.isNotNull());
+                bw.newLine();
+            }
+            
+            for (schema.ForeignKeyConstraint fk : table.getSchema().getForeignKeys()) {
+                bw.write("FK:" + fk.getChildColumn() + ":" + fk.getParentTable() + ":" + fk.getParentColumn());
                 bw.newLine();
             }
         } catch (IOException e) {
@@ -65,18 +70,36 @@ public class MetadataManager {
                 line = line.trim();
                 if (line.isEmpty()) continue;
                 
+                if (line.startsWith("FK:")) {
+                    String[] parts = line.split(":");
+                    if (parts.length != 4) {
+                        throw new StorageException("Invalid foreign key format in metadata for: " + tableName);
+                    }
+                    schema.addForeignKey(new schema.ForeignKeyConstraint(parts[1], parts[2], parts[3]));
+                    continue;
+                }
+                
                 String[] parts = line.split(":");
-                if (parts.length < 2 || parts.length > 3) {
+                if (parts.length < 2 || parts.length > 5) {
                     throw new StorageException("Invalid column format in metadata for: " + tableName);
                 }
                 
                 String colName = parts[0];
                 DataType type = DataType.valueOf(parts[1]);
                 boolean isPrimaryKey = false;
-                if (parts.length == 3) {
+                boolean isUnique = false;
+                boolean isNotNull = false;
+                
+                if (parts.length >= 3) {
                     isPrimaryKey = Boolean.parseBoolean(parts[2]);
                 }
-                schema.addColumn(new Column(colName, type, isPrimaryKey));
+                if (parts.length >= 4) {
+                    isUnique = Boolean.parseBoolean(parts[3]);
+                }
+                if (parts.length == 5) {
+                    isNotNull = Boolean.parseBoolean(parts[4]);
+                }
+                schema.addColumn(new Column(colName, type, isPrimaryKey, isUnique, isNotNull));
             }
             return schema;
         } catch (IOException e) {

@@ -7,15 +7,23 @@ public class Column {
     private String name;
     private DataType type;
     private boolean isPrimaryKey;
+    private boolean isUnique;
+    private boolean isNotNull;
 
     public Column(String name, DataType type) {
-        this(name, type, false);
+        this(name, type, false, false, false);
     }
 
     public Column(String name, DataType type, boolean isPrimaryKey) {
+        this(name, type, isPrimaryKey, false, false);
+    }
+
+    public Column(String name, DataType type, boolean isPrimaryKey, boolean isUnique, boolean isNotNull) {
         this.name = name;
         this.type = type;
         this.isPrimaryKey = isPrimaryKey;
+        this.isUnique = isUnique;
+        this.isNotNull = isNotNull;
     }
 
     public String getName() {
@@ -42,12 +50,30 @@ public class Column {
         isPrimaryKey = primaryKey;
     }
 
+    public boolean isUnique() {
+        return isUnique;
+    }
+
+    public void setUnique(boolean unique) {
+        isUnique = unique;
+    }
+
+    public boolean isNotNull() {
+        return isNotNull;
+    }
+
+    public void setNotNull(boolean notNull) {
+        isNotNull = notNull;
+    }
+
     @Override
     public String toString() {
         return "Column{" +
                 "name='" + name + '\'' +
                 ", type=" + type +
                 ", isPrimaryKey=" + isPrimaryKey +
+                ", isUnique=" + isUnique +
+                ", isNotNull=" + isNotNull +
                 '}';
     }
 }
