@@ -9,9 +9,11 @@ import java.util.List;
  */
 public class Schema {
     private List<Column> columns;
+    private List<ForeignKeyConstraint> foreignKeys;
 
     public Schema() {
         this.columns = new ArrayList<>();
+        this.foreignKeys = new ArrayList<>();
     }
 
     public void addColumn(Column column) {
@@ -21,8 +23,16 @@ public class Schema {
         this.columns.add(column);
     }
 
+    public void addForeignKey(ForeignKeyConstraint fk) {
+        this.foreignKeys.add(fk);
+    }
+
     public List<Column> getColumns() {
         return columns;
+    }
+
+    public List<ForeignKeyConstraint> getForeignKeys() {
+        return foreignKeys;
     }
 
     public Column getColumn(String name) {
@@ -64,6 +74,7 @@ public class Schema {
     public String toString() {
         return "Schema{" +
                 "columns=" + columns +
+                ", foreignKeys=" + foreignKeys +
                 '}';
     }
 }

@@ -6,6 +6,8 @@ import schema.Column;
 import schema.DataType;
 import schema.Schema;
 
+import schema.ForeignKeyConstraint;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -70,6 +72,35 @@ public class SQLParser {
 
         int index = 4;
         while (index < tokens.size() && !tokens.get(index).equals(")")) {
+            String token = tokens.get(index).toUpperCase();
+            if (token.equals("FOREIGN") && index + 1 < tokens.size() && tokens.get(index + 1).toUpperCase().equals("KEY")) {
+                index += 2;
+                if (!tokens.get(index).equals("(")) throw new ParserException();
+                index++;
+                String childCol = tokens.get(index);
+                index++;
+                if (!tokens.get(index).equals(")")) throw new ParserException();
+                index++;
+                
+                if (!tokens.get(index).toUpperCase().equals("REFERENCES")) throw new ParserException();
+                index++;
+                String parentTable = tokens.get(index);
+                index++;
+                if (!tokens.get(index).equals("(")) throw new ParserException();
+                index++;
+                String parentCol = tokens.get(index);
+                index++;
+                if (!tokens.get(index).equals(")")) throw new ParserException();
+                index++;
+                
+                schema.addForeignKey(new ForeignKeyConstraint(childCol, parentTable, parentCol));
+                
+                if (index < tokens.size() && tokens.get(index).equals(",")) {
+                    index++;
+                }
+                continue;
+            }
+
             String colName = tokens.get(index);
             index++;
             if (index >= tokens.size())
@@ -84,12 +115,26 @@ public class SQLParser {
             index++;
             
             boolean isPrimaryKey = false;
-            if (index + 1 < tokens.size() && tokens.get(index).toUpperCase().equals("PRIMARY") && tokens.get(index + 1).toUpperCase().equals("KEY")) {
-                isPrimaryKey = true;
-                index += 2;
+            boolean isUnique = false;
+            boolean isNotNull = false;
+            
+            while (index < tokens.size() && !tokens.get(index).equals(",") && !tokens.get(index).equals(")")) {
+                String constraintToken = tokens.get(index).toUpperCase();
+                if (constraintToken.equals("PRIMARY") && index + 1 < tokens.size() && tokens.get(index + 1).toUpperCase().equals("KEY")) {
+                    isPrimaryKey = true;
+                    index += 2;
+                } else if (constraintToken.equals("UNIQUE")) {
+                    isUnique = true;
+                    index++;
+                } else if (constraintToken.equals("NOT") && index + 1 < tokens.size() && tokens.get(index + 1).toUpperCase().equals("NULL")) {
+                    isNotNull = true;
+                    index += 2;
+                } else {
+                    throw new ParserException("Unknown constraint or token: " + constraintToken);
+                }
             }
 
-            schema.addColumn(new Column(colName, type, isPrimaryKey));
+            schema.addColumn(new Column(colName, type, isPrimaryKey, isUnique, isNotNull));
 
             if (index < tokens.size() && tokens.get(index).equals(",")) {
                 index++;
