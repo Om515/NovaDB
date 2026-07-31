@@ -10,6 +10,7 @@ import model.Table;
 import optimizer.ExecutionPlan;
 import optimizer.QueryOptimizer;
 import schema.Column;
+import schema.DataType;
 import schema.Schema;
 import schema.SchemaManager;
 import storage.IndexMetadataManager;
@@ -282,6 +283,22 @@ public class QueryEngine {
         Schema schema = table.getSchema();
         List<Record> results = new ArrayList<>();
 
+        List<String> colNames = new ArrayList<>();
+        List<DataType> colTypes = new ArrayList<>();
+        String baseAlias = cmd.getTableAlias() != null ? cmd.getTableAlias() : cmd.getTableName();
+
+        if (cmd.getJoins() != null && !cmd.getJoins().isEmpty()) {
+            for (Column col : schema.getColumns()) {
+                colNames.add(baseAlias + "." + col.getName());
+                colTypes.add(col.getType());
+            }
+        } else {
+            for (Column col : schema.getColumns()) {
+                colNames.add(col.getName());
+                colTypes.add(col.getType());
+            }
+        }
+
         ExecutionPlan plan = optimizer.choosePlan(table, cmd);
         System.out.println("Execution Plan : " + plan.name());
 
@@ -307,25 +324,234 @@ public class QueryEngine {
                     results.add(r);
                 }
             }
-        } else {
+        }
+
+        boolean filterAtEnd = false;
+        if (plan != ExecutionPlan.INDEX_SCAN) {
             int whereColIndex = -1;
             if (cmd.getWhereColumn() != null) {
-                whereColIndex = getColumnIndex(schema, cmd.getWhereColumn());
+                String raw = getRawColumnName(cmd.getWhereColumn());
+                boolean matchesBase = true;
+                if (cmd.getWhereColumn().contains(".")) {
+                    String prefix = cmd.getWhereColumn().substring(0, cmd.getWhereColumn().indexOf('.'));
+                    if (!prefix.equalsIgnoreCase(baseAlias) && !prefix.equalsIgnoreCase(cmd.getTableName())) {
+                        matchesBase = false;
+                    }
+                }
+                if (matchesBase) {
+                    try {
+                        whereColIndex = getColumnIndex(schema, raw);
+                    } catch (QueryException e) {
+                        filterAtEnd = true;
+                    }
+                } else {
+                    filterAtEnd = true;
+                }
             }
 
             for (Record record : storageManager.getRecords(cmd.getTableName())) {
-                if (whereColIndex == -1 || matchCondition(record, whereColIndex, cmd.getWhereValue())) {
+                if (whereColIndex == -1 || filterAtEnd || matchCondition(record, whereColIndex, cmd.getWhereValue())) {
                     results.add(record);
                 }
             }
         }
 
-        List<String> colNames = new ArrayList<>();
-        for (Column col : schema.getColumns()) {
-            colNames.add(col.getName());
+        if (cmd.getJoins() != null && !cmd.getJoins().isEmpty()) {
+            for (command.JoinCondition join : cmd.getJoins()) {
+                Table targetTable = schemaManager.getTable(join.getTargetTable());
+                if (targetTable == null) {
+                    throw new QueryException("Join target table '" + join.getTargetTable() + "' does not exist.");
+                }
+                List<Record> targetRecords = storageManager.getRecords(join.getTargetTable());
+                Schema targetSchema = targetTable.getSchema();
+                
+                String targetAlias = join.getTargetAlias() != null ? join.getTargetAlias() : join.getTargetTable();
+                
+                for (Column col : targetSchema.getColumns()) {
+                    colNames.add(targetAlias + "." + col.getName());
+                    colTypes.add(col.getType());
+                }
+
+                boolean isCrossJoin = join.getJoinType().equals("CROSS");
+                String leftRawCol = null;
+                String rightRawCol = null;
+                int leftJoinColIndex = -1;
+                int rightJoinColIndex = -1;
+                Index targetIndex = null;
+
+                if (!isCrossJoin) {
+                    leftRawCol = getRawColumnName(join.getLeftColumn());
+                    rightRawCol = getRawColumnName(join.getRightColumn());
+
+                    if (join.getLeftColumn().contains(".")) {
+                        for (int i = 0; i < colNames.size(); i++) {
+                            if (colNames.get(i).equalsIgnoreCase(join.getLeftColumn())) {
+                                leftJoinColIndex = i;
+                                break;
+                            }
+                        }
+                    } else {
+                        for (int i = 0; i < colNames.size(); i++) {
+                            if (colNames.get(i).endsWith("." + leftRawCol)) {
+                                leftJoinColIndex = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (leftJoinColIndex == -1) {
+                        throw new QueryException("Join left column not found: " + join.getLeftColumn());
+                    }
+
+                    if (join.getRightColumn().contains(".")) {
+                        String rightPrefix = join.getRightColumn().substring(0, join.getRightColumn().indexOf('.'));
+                        if (!rightPrefix.equalsIgnoreCase(targetAlias)) {
+                            throw new QueryException("Alias '" + rightPrefix + "' is not defined or invalid for right join target.");
+                        }
+                    }
+
+                    rightJoinColIndex = getColumnIndex(targetSchema, rightRawCol);
+                    
+                    DataType leftType = colTypes.get(leftJoinColIndex);
+                    DataType rightType = targetSchema.getColumns().get(rightJoinColIndex).getType();
+                    if (leftType != rightType) {
+                        throw new QueryException("Type mismatch in JOIN condition between " + join.getLeftColumn() + " and " + join.getRightColumn());
+                    }
+
+                    for (Index idx : indexManager.getIndicesForTable(join.getTargetTable())) {
+                        if (idx.getColumnName().equals(rightRawCol)) {
+                            targetIndex = idx;
+                            break;
+                        }
+                    }
+                }
+
+                List<Record> joinedResults = new ArrayList<>();
+                boolean[] rightMatched = new boolean[targetRecords.size()];
+
+                for (Record leftRecord : results) {
+                    boolean leftMatchedAny = false;
+                    if (isCrossJoin) {
+                        for (Record targetRecord : targetRecords) {
+                            Record merged = new Record();
+                            for (Cell c : leftRecord.getCells()) merged.addCell(new Cell(c.getValue()));
+                            for (Cell c : targetRecord.getCells()) merged.addCell(new Cell(c.getValue()));
+                            joinedResults.add(merged);
+                        }
+                        continue;
+                    }
+
+                    Comparable searchKey = (Comparable) leftRecord.getCell(leftJoinColIndex).getValue();
+                    if (targetIndex != null && searchKey != null) {
+                        Integer position = indexManager.searchKey(targetIndex, searchKey);
+                        if (position != null) {
+                            Record targetRecord = storageManager.getRecord(join.getTargetTable(), position);
+                            if (targetRecord != null) {
+                                Record merged = new Record();
+                                for (Cell c : leftRecord.getCells()) merged.addCell(new Cell(c.getValue()));
+                                for (Cell c : targetRecord.getCells()) merged.addCell(new Cell(c.getValue()));
+                                joinedResults.add(merged);
+                                leftMatchedAny = true;
+                                int trIndex = targetRecords.indexOf(targetRecord);
+                                if (trIndex >= 0) rightMatched[trIndex] = true;
+                            }
+                        }
+                    } else {
+                        for (int j = 0; j < targetRecords.size(); j++) {
+                            Record targetRecord = targetRecords.get(j);
+                            if (searchKey != null && matchCondition(targetRecord, rightJoinColIndex, searchKey)) {
+                                Record merged = new Record();
+                                for (Cell c : leftRecord.getCells()) merged.addCell(new Cell(c.getValue()));
+                                for (Cell c : targetRecord.getCells()) merged.addCell(new Cell(c.getValue()));
+                                joinedResults.add(merged);
+                                leftMatchedAny = true;
+                                rightMatched[j] = true;
+                            }
+                        }
+                    }
+
+                    if (!leftMatchedAny && join.getJoinType().equals("LEFT")) {
+                        Record merged = new Record();
+                        for (Cell c : leftRecord.getCells()) merged.addCell(new Cell(c.getValue()));
+                        for (int i = 0; i < targetSchema.getColumnCount(); i++) merged.addCell(new Cell(null));
+                        joinedResults.add(merged);
+                    }
+                }
+
+                if (join.getJoinType().equals("RIGHT")) {
+                    for (int j = 0; j < targetRecords.size(); j++) {
+                        if (!rightMatched[j]) {
+                            Record merged = new Record();
+                            int leftColCount = colNames.size() - targetSchema.getColumnCount();
+                            for (int i = 0; i < leftColCount; i++) merged.addCell(new Cell(null));
+                            for (Cell c : targetRecords.get(j).getCells()) merged.addCell(new Cell(c.getValue()));
+                            joinedResults.add(merged);
+                        }
+                    }
+                }
+                results = joinedResults;
+            }
+        }
+
+        if (filterAtEnd && cmd.getWhereColumn() != null) {
+            String colName = cmd.getWhereColumn();
+            int finalWhereIdx = -1;
+            for (int i = 0; i < colNames.size(); i++) {
+                if (colNames.get(i).equalsIgnoreCase(colName) || colNames.get(i).endsWith("." + colName)) {
+                    finalWhereIdx = i;
+                    break;
+                }
+            }
+            if (finalWhereIdx == -1) {
+                throw new QueryException("Column '" + colName + "' does not exist.");
+            }
+            List<Record> filtered = new ArrayList<>();
+            for (Record record : results) {
+                if (matchCondition(record, finalWhereIdx, cmd.getWhereValue())) {
+                    filtered.add(record);
+                }
+            }
+            results = filtered;
+        }
+
+        if (!cmd.isSelectAll()) {
+            List<Integer> projectionIndices = new ArrayList<>();
+            List<String> projectedNames = new ArrayList<>();
+            for (String selectedCol : cmd.getSelectedColumns()) {
+                int idx = -1;
+                for (int i = 0; i < colNames.size(); i++) {
+                    if (colNames.get(i).equalsIgnoreCase(selectedCol) || colNames.get(i).endsWith("." + selectedCol)) {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx == -1) {
+                    throw new QueryException("Column '" + selectedCol + "' does not exist.");
+                }
+                projectionIndices.add(idx);
+                projectedNames.add(colNames.get(idx));
+            }
+            
+            List<Record> projectedRecords = new ArrayList<>();
+            for (Record record : results) {
+                Record projected = new Record();
+                for (int idx : projectionIndices) {
+                    projected.addCell(new Cell(record.getCell(idx).getValue()));
+                }
+                projectedRecords.add(projected);
+            }
+            results = projectedRecords;
+            colNames = projectedNames;
         }
 
         return new QueryResult(true, results.size() + " rows selected.", results, colNames);
+    }
+
+    private String getRawColumnName(String qualifiedName) {
+        if (qualifiedName.contains(".")) {
+            return qualifiedName.substring(qualifiedName.indexOf('.') + 1);
+        }
+        return qualifiedName;
     }
 
     private QueryResult executeUpdate(UpdateCommand cmd) {

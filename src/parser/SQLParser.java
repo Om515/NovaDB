@@ -186,24 +186,125 @@ public class SQLParser {
     }
 
     private Command parseSelect(List<String> tokens) {
-        if (tokens.size() < 4 || !tokens.get(2).toUpperCase().equals("FROM")) {
+        if (tokens.size() < 4) {
             throw new ParserException();
         }
 
         boolean selectAll = tokens.get(1).equals("*");
-        String tableName = tokens.get(3);
-
-        if (tokens.size() > 4 && tokens.get(4).toUpperCase().equals("WHERE")) {
-            if (tokens.size() < 8)
-                throw new ParserException();
-            String whereCol = tokens.get(5);
-            if (!tokens.get(6).equals("="))
-                throw new ParserException();
-            Object whereVal = parseLiteral(tokens.get(7));
-            return new SelectCommand(tableName, selectAll, whereCol, whereVal);
+        List<String> selectedColumns = new ArrayList<>();
+        int fromIndex = -1;
+        for (int i = 1; i < tokens.size(); i++) {
+            if (tokens.get(i).toUpperCase().equals("FROM")) {
+                fromIndex = i;
+                break;
+            }
+        }
+        if (fromIndex == -1 || fromIndex + 1 >= tokens.size()) {
+            throw new ParserException("Expected FROM clause after SELECT projection");
         }
 
-        return new SelectCommand(tableName, selectAll, null, null);
+        if (!selectAll) {
+            // tokens from 1 to fromIndex - 1 are projection columns, separated by comma.
+            for (int i = 1; i < fromIndex; i++) {
+                if (!tokens.get(i).equals(",")) {
+                    selectedColumns.add(tokens.get(i));
+                }
+            }
+        }
+
+        String tableName = tokens.get(fromIndex + 1);
+
+        String tableAlias = null;
+        int index = fromIndex + 2;
+
+        if (index < tokens.size()) {
+            String token = tokens.get(index).toUpperCase();
+            if (!token.equals("WHERE") && !token.equals("JOIN") && !token.equals("INNER") && !token.equals("LEFT") && !token.equals("RIGHT") && !token.equals("CROSS")) {
+                if (token.equals("AS")) {
+                    index++;
+                    if (index >= tokens.size()) throw new ParserException();
+                }
+                tableAlias = tokens.get(index);
+                index++;
+            }
+        }
+
+        List<command.JoinCondition> joins = new ArrayList<>();
+
+        while (index < tokens.size()) {
+            String token = tokens.get(index).toUpperCase();
+            if (token.equals("JOIN") || token.equals("INNER") || token.equals("LEFT") || token.equals("RIGHT") || token.equals("CROSS")) {
+                String joinType = "INNER";
+                if (token.equals("INNER") || token.equals("LEFT") || token.equals("RIGHT") || token.equals("CROSS")) {
+                    joinType = token;
+                    index++;
+                    if (index < tokens.size() && tokens.get(index).toUpperCase().equals("OUTER")) {
+                        index++;
+                    }
+                    if (index >= tokens.size() || !tokens.get(index).toUpperCase().equals("JOIN")) {
+                        throw new ParserException("Expected JOIN after " + joinType);
+                    }
+                }
+                index++;
+                if (index >= tokens.size()) throw new ParserException();
+                String targetTable = tokens.get(index);
+                index++;
+
+                String targetAlias = null;
+                if (index < tokens.size()) {
+                    String nextTok = tokens.get(index).toUpperCase();
+                    if (!nextTok.equals("ON") && !nextTok.equals("JOIN") && !nextTok.equals("INNER") && !nextTok.equals("LEFT") && !nextTok.equals("RIGHT") && !nextTok.equals("CROSS") && !nextTok.equals("WHERE")) {
+                        if (nextTok.equals("AS")) {
+                            index++;
+                            if (index >= tokens.size()) throw new ParserException();
+                        }
+                        targetAlias = tokens.get(index);
+                        index++;
+                    }
+                }
+
+                String leftCol = null;
+                String rightCol = null;
+
+                if (!joinType.equals("CROSS")) {
+                    if (index >= tokens.size() || !tokens.get(index).toUpperCase().equals("ON")) {
+                        throw new ParserException("Expected ON after JOIN target");
+                    }
+                    index++;
+
+                    if (index >= tokens.size()) throw new ParserException();
+                    leftCol = tokens.get(index);
+                    index++;
+
+                    if (index >= tokens.size() || !tokens.get(index).equals("=")) {
+                        throw new ParserException("Expected '=' in JOIN condition");
+                    }
+                    index++;
+
+                    if (index >= tokens.size()) throw new ParserException();
+                    rightCol = tokens.get(index);
+                    index++;
+                }
+
+                joins.add(new command.JoinCondition(joinType, targetTable, targetAlias, leftCol, rightCol));
+            } else {
+                break;
+            }
+        }
+
+        String whereCol = null;
+        Object whereVal = null;
+        if (index < tokens.size() && tokens.get(index).toUpperCase().equals("WHERE")) {
+            index++;
+            if (index + 2 > tokens.size()) throw new ParserException();
+            whereCol = tokens.get(index);
+            index++;
+            if (!tokens.get(index).equals("=")) throw new ParserException();
+            index++;
+            whereVal = parseLiteral(tokens.get(index));
+        }
+
+        return new SelectCommand(tableName, tableAlias, selectAll, selectedColumns, whereCol, whereVal, joins);
     }
 
     private Command parseUpdate(List<String> tokens) {
