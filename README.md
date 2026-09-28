@@ -50,7 +50,7 @@ flowchart TD
     C -->|WHERE on Indexed Col| D[ExecutionPlan.INDEX_SCAN]
     C -->|No Index Available| E[ExecutionPlan.TABLE_SCAN]
     D --> F[B+ Tree Search]
-    F -->|O(1) amortized disk I/O| G[(FileStorageManager)]
+    F -->|"Fast amortized disk IO"| G[(FileStorageManager)]
     E -->|Sequential Read| G
     G --> H[Memory Buffer / LRU Cache]
     H --> I[Apply Filters & Joins]
@@ -71,8 +71,8 @@ flowchart TD
     D -->|Passes| E[Modify Record in Memory]
     E --> F[Serialize New Record]
     F --> G[(FileStorageManager)]
-    G -->|Write New/Updated Bytes| H[IndexManager]
-    H -->|Remove Old Keys, Insert New Keys| I([Success Response])
+    G -->|"Write New or Updated Bytes"| H[IndexManager]
+    H -->|"Remove Old Keys, Insert New Keys"| I([Success Response])
 ```
 **Implementation Details:**
 - Locates the existing record and validates constraints on the updated fields.
@@ -86,8 +86,8 @@ flowchart TD
     A[Raw SQL String] -->|Parser| B(DeleteCommand)
     B --> C[Locate Record via Index/Scan]
     C --> D[(FileStorageManager)]
-    D -->|Mark as Deleted / Tombstone| E[IndexManager]
-    E -->|Synchronous B+ Tree Key Deletion| F([Success Response])
+    D -->|"Mark as Deleted or Tombstone"| E[IndexManager]
+    E -->|"Synchronous B+ Tree Key Deletion"| F([Success Response])
 ```
 **Implementation Details:**
 - The engine finds the targeted records.
